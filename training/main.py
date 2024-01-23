@@ -16,8 +16,8 @@ if __name__ == "__main__":
     dataset_path = os.path.join(base_dir, "dataset")
     os.makedirs(dataset_path, exist_ok=True)
 
-    train_ds_path = os.path.join(dataset_path, "train_v4.tfrecord")
-    val_ds_path = os.path.join(dataset_path, "validation_v4.tfrecord")
+    train_ds_path = os.path.join(dataset_path, "train_v3.tfrecord")
+    val_ds_path = os.path.join(dataset_path, "validation_v3.tfrecord")
 
     path_train_csv = os.path.join(annotations_path, "train_ds.csv")
     path_validation_csv = os.path.join(annotations_path, "val_ds.csv")
