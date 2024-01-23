@@ -171,7 +171,28 @@ def preprocess_data_tuple(
     return image, bbox, class_id
 
 
-def get_backbone():
+def preprocess_data(sample) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Applies preprocessing step to a single sample
+
+    Arguments:
+      sample: A dict representing a single training sample.
+
+    Returns:
+      image: Resized and padded image with random horizontal flipping applied.
+      bbox: Bounding boxes with the shape `(num_objects, 4)` where each box is
+        of the format `[x, y, width, height]`.
+      class_id: An tensor representing the class id of the objects, having
+        shape `(num_objects,)`.
+    """
+    return preprocess_data_tuple(
+        (sample["image"], sample["objects"]["bbox"],
+         sample["objects"]["label"]),
+        swap=True,
+        multiply_bbox=True,
+    )
+
+
+def get_backbone() -> keras.Model:
     """Builds ResNet50 with pre-trained imagenet weights"""
     backbone = keras.applications.ResNet50(include_top=False,
                                            input_shape=[None, None, 3])
@@ -213,3 +234,135 @@ def build_head(output_filters, bias_init):
             bias_initializer=bias_init,
         ))
     return head
+
+
+def image_feature(x) -> tf.train.Feature:
+    """Returns a bytes_list from a string / byte."""
+    value = tf.io.encode_png(x)
+    value = value.numpy()
+    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
+
+def bbox_features(
+    df: pd.DataFrame,
+    keys: str,
+) -> tf.train.Feature:
+    """Returns a dataframe, selected by keys, flattened.
+    Args:
+        df: pd.DataFrame containing the original features
+        keys: columns identifying the keys
+
+    Returns:
+        tf.train.Feature with flattened values from dataframe
+
+    """
+    vals = df[keys].to_numpy().flatten()
+    return tf.train.Feature(float_list=tf.train.FloatList(value=vals))
+
+
+def labels_feature(num_bboxes: int) -> tf.train.Feature:
+    """Initializes all classes to 0, as they all belong to same class."""
+    return tf.train.Feature(int64_list=tf.train.Int64List(
+        value=[0 for _ in range(num_bboxes)]))
+
+
+def create_tf_record(
+    df: pd.DataFrame,
+    file_path: str,
+) -> tf.train.Example:
+    """Builds single tf record given a df containing all bboxes."""
+    feature = {
+        "input":
+            image_feature(
+                tf.image.decode_png(
+                    tf.io.read_file(file_path),
+                    channels=3,
+                    dtype=tf.uint8,
+                )),
+        "labels":
+            labels_feature(num_bboxes=len(df)),
+    }
+    keys = ['bbox-1', 'bbox-0', 'bbox-3', 'bbox-2']
+    feature['bbox'] = bbox_features(df, keys=keys)
+
+    return tf.train.Example(features=tf.train.Features(feature=feature))
+
+
+def build_tfrecord(
+    df: pd.DataFrame,
+    images_path: str,
+    output_path: str,
+    overwrite: bool = False,
+):
+    """Builds TF record from a dataframe containing all bboxes and filenames."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if overwrite or not os.path.exists(output_path):
+        with tf.io.TFRecordWriter(output_path) as writer:
+            df_g = df.groupby('filename')
+
+            for filename, df_current in tqdm(
+                    df_g,
+                    total=len(df_g),
+                    desc=f"Converting to tf records...",
+            ):
+                writer.write(
+                    create_tf_record(
+                        df=df_current,
+                        file_path=os.path.join(images_path, filename),
+                    ).SerializeToString())
+    else:
+        print("Reading from cache")
+
+
+def adapt(
+    data_structure,
+    multiply_bbox: bool = True,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Adapts tf record in dict form for RetinaNet."""
+    batch_images = data_structure['input']
+    gt_boxes = tf.reshape(data_structure['bbox'], [-1, 4])
+    cls_ids = data_structure['labels']
+
+    return preprocess_data_tuple(
+        (batch_images, gt_boxes, cls_ids),
+        swap=True,
+        multiply_bbox=multiply_bbox,
+    )
+
+
+def adapt_dataset(
+    ds,
+    ds_len,
+    batch_size,
+    label_encoder,
+    multiply_bbox,
+    seed: int = 1234,
+) -> tf.data.Dataset:
+    """Builds dataset pipeline."""
+    autotune = tf.data.AUTOTUNE
+    ds = ds.apply(tf.data.experimental.assert_cardinality(ds_len))
+    ds = ds.cache()
+
+    ds = ds.shuffle(
+        3 * batch_size,
+        seed=seed,
+    )
+
+    ds = ds.map(
+        partial(adapt, multiply_bbox=multiply_bbox),
+        num_parallel_calls=autotune,
+    )
+
+    ds = ds.padded_batch(
+        batch_size=batch_size,
+        padding_values=(0.0, 1e-8, -1),
+        drop_remainder=True,
+    )
+
+    ds = ds.map(
+        label_encoder.encode_batch,
+        num_parallel_calls=autotune,
+    )
+
+    ds = ds.prefetch(autotune)
+    return ds
