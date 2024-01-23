@@ -144,7 +144,7 @@ def visualize_detections(
                 clip_box=ax.clipbox,
                 clip_on=True,
             )
-        plt.show()
+    plt.show()
     return ax
 
 
