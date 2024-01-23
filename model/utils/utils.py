@@ -35,7 +35,8 @@ def convert_to_corners(boxes: tf.Tensor) -> tf.Tensor:
         axis=-1,
     )
 
-def swap_xy(boxes):
+
+def swap_xy(boxes: tf.Tensor) -> tf.Tensor:
     """Swaps order the of x and y coordinates of the boxes.
 
     Arguments:
@@ -138,22 +139,34 @@ def preprocess_data_tuple(
       class_id: An tensor representing the class id of the objects, having
         shape `(num_objects,)`.
     """
-    image = sample["image"]
-    bbox = swap_xy(sample["objects"]["bbox"])
-    class_id = tf.cast(sample["objects"]["label"], dtype=tf.int32)
+    image, bbox, class_id = sample
+    if swap:
+        bbox = swap_xy(bbox)
+    class_id = tf.cast(class_id, dtype=tf.int32)
 
     image, bbox = random_flip_horizontal(image, bbox)
     image, image_shape, _ = resize_and_pad_image(image)
 
-    bbox = tf.stack(
-        [
-            bbox[:, 0] * image_shape[1],
-            bbox[:, 1] * image_shape[0],
-            bbox[:, 2] * image_shape[1],
-            bbox[:, 3] * image_shape[0],
-        ],
-        axis=-1,
-    )
+    if multiply_bbox:
+        bbox = tf.stack(
+            [
+                bbox[:, 0] * image_shape[1],
+                bbox[:, 1] * image_shape[0],
+                bbox[:, 2] * image_shape[1],
+                bbox[:, 3] * image_shape[0],
+            ],
+            axis=-1,
+        )
+    else:
+        bbox = tf.stack(
+            [
+                bbox[:, 0],
+                bbox[:, 1],
+                bbox[:, 2],
+                bbox[:, 3],
+            ],
+            axis=-1,
+        )
     bbox = convert_to_xywh(bbox)
     return image, bbox, class_id
 
